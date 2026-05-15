@@ -1,0 +1,77 @@
+---
+- name: Compile and build Docker container
+  hosts: localhost
+  become: yes
+  vars:
+    docker_registry_url: "533267177356.dkr.ecr.us-west-2.amazonaws.com"
+    docker_image_name: "big_industry"
+    ansible_dir: "{{ playbook_dir }}"  # Directory where the playbook is located
+    repo_path: "{{ ansible_dir | dirname }}"  # Parent directory of the playbook directory
+    kubernetes_deployment_file: "{{ repo_path }}/kubernetes/deployment.yaml"
+    kubernetes_service_file: "{{ repo_path }}/kubernetes/service.yaml"
+    kubeconfig_path: "/var/lib/jenkins/.kube/config"  # Path to the kubeconfig file
+
+  tasks:
+    - name: Ensure Java is installed
+      apt:
+        name: openjdk-11-jdk
+        state: present
+
+    - name: Ensure Maven is installed
+      apt:
+        name: maven
+        state: present
+
+    - name: Compile the project with Maven
+      command: mvn compile
+      args:
+        chdir: "{{ repo_path }}"
+
+    - name: Package the project with Maven
+      command: mvn package
+      args:
+        chdir: "{{ repo_path }}"
+
+    - name: Get the short Git commit SHA
+      command: git rev-parse --short HEAD
+      args:
+        chdir: "{{ repo_path }}"
+      register: git_commit_sha
+
+    - name: Set Docker image tag based on commit SHA
+      set_fact:
+        docker_image_tag: "{{ git_commit_sha.stdout }}"
+
+    - name: Build the Docker image
+      command: docker build -t {{ docker_registry_url }}/{{ docker_image_name }}:{{ docker_image_tag }} .
+      args:
+        chdir: "{{ repo_path }}"
+
+    - name: Login to Docker registry
+      shell: |
+        aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin {{ docker_registry_url }}
+      args:
+        chdir: "{{ repo_path }}"
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+        AWS_SECRET_ACCESS_KEY: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+        AWS_DEFAULT_REGION: "{{ lookup('env', 'AWS_DEFAULT_REGION') }}"
+
+    - name: Push Docker Image
+      command: docker push {{ docker_registry_url }}/{{ docker_image_name }}:{{ docker_image_tag }}
+      args:
+        chdir: "{{ repo_path }}"
+
+    - name: Update Deployment YAML with Docker image tag
+      replace:
+        path: "{{ kubernetes_deployment_file }}"
+        regexp: 'image: {{ docker_image_name }}:.*'
+        replace: 'image: {{ docker_registry_url }}/{{ docker_image_name }}:{{ docker_image_tag }}'
+
+    - name: Apply Kubernetes Deployment YAML
+      command: kubectl apply -f "{{ kubernetes_deployment_file }}" --kubeconfig="{{ kubeconfig_path }}" --validate=false
+      ignore_errors: yes
+
+    - name: Apply Kubernetes Service YAML
+      command: kubectl apply -f "{{ kubernetes_service_file }}" --kubeconfig="{{ kubeconfig_path }}" --validate=false
+      ignore_errors: yes
