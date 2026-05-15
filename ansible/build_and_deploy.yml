@@ -62,16 +62,12 @@
       args:
         chdir: "{{ repo_path }}"
 
-    - name: Update Deployment YAML with Docker image tag
-      replace:
-        path: "{{ kubernetes_deployment_file }}"
-        regexp: 'image: {{ docker_image_name }}:.*'
-        replace: 'image: {{ docker_registry_url }}/{{ docker_image_name }}:{{ docker_image_tag }}'
+    - name: Deploy to Kubernetes via Helm
+      command: >
+        helm upgrade --install retail-module ./charts/retail-module
+        --set image.repository={{ docker_registry_url }}/{{ docker_image_name }}
+        --set image.tag={{ docker_image_tag }}
+        --kubeconfig={{ kubeconfig_path }}
+      args:
+        chdir: "{{ repo_path }}"
 
-    - name: Apply Kubernetes Deployment YAML
-      command: kubectl apply -f "{{ kubernetes_deployment_file }}" --kubeconfig="{{ kubeconfig_path }}" --validate=false
-      ignore_errors: yes
-
-    - name: Apply Kubernetes Service YAML
-      command: kubectl apply -f "{{ kubernetes_service_file }}" --kubeconfig="{{ kubeconfig_path }}" --validate=false
-      ignore_errors: yes
